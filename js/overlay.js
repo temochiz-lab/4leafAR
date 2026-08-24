@@ -53,7 +53,8 @@ export class OverlayRenderer {
 
     for (const candidate of candidates) {
       const center = this.toCanvas(candidate.x, candidate.y);
-      const radius = Math.max(16 * (window.devicePixelRatio || 1), candidate.radius * this.fit.scale * 0.62);
+      const sourceScale = candidate.source === "pale-pattern" ? 0.32 : candidate.source === "center-cross" ? 0.4 : candidate.source === "junction" ? 0.44 : 0.5;
+      const radius = Math.max(9 * (window.devicePixelRatio || 1), candidate.radius * this.fit.scale * sourceScale);
       ctx.beginPath();
       ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
       ctx.lineWidth = Math.max(3, 5 * (window.devicePixelRatio || 1));

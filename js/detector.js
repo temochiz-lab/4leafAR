@@ -29,9 +29,9 @@ export class CloverDetector {
       : null;
     const rankedCandidates = boostFocusedCandidates(mergeCandidates([
       ...paleCandidates,
+      ...scanCenterDotCandidates(frame.data, mask, width, height),
       ...scoreFourLeafGroups(leaves, width, height),
-      ...scanDarkJunctionCenters(frame.data, mask, width, height),
-      ...scanRadialCloverCenters(frame.data, mask, width, height)
+      ...scanDarkJunctionCenters(frame.data, mask, width, height)
     ]), focusPoint);
     const candidates = rankedCandidates
       .filter((candidate) => candidate.score >= options.threshold)
@@ -249,11 +249,11 @@ function scorePaleMarkGroups(marks, width, height) {
       const radiusScore = 1 - clamp(stddev(radii) / Math.max(1, avgRadius), 0, 1);
       const sizeScore = clamp(Math.log1p(average(group.map((item) => item.area))) / 4.2, 0, 1);
       const countScore = group.length === 4 ? 1 : 0.76;
-      const score = Math.round(clamp((countScore * 0.28 + angleScore * 0.28 + radiusScore * 0.22 + sizeScore * 0.14 + edgePenalty(center, width, height) * 0.08) * 100, 0, 98));
+      const score = Math.round(clamp((countScore * 0.22 + angleScore * 0.32 + radiusScore * 0.24 + sizeScore * 0.1 + edgePenalty(center, width, height) * 0.08) * 100, 0, 90));
       candidates.push({
         x: center.x,
         y: center.y,
-        radius: avgRadius * 2.2 + average(group.map((item) => item.radius)) * 1.8,
+        radius: avgRadius * 1.35 + average(group.map((item) => item.radius)) * 1.1,
         score,
         source: "pale-pattern",
         leaves: []
@@ -367,18 +367,111 @@ function scanDarkJunctionCenters(data, mask, width, height) {
       const candidate = scoreRadialCenter(data, mask, width, height, junction.x, junction.y, radius);
       if (!best || candidate.score > best.score) best = candidate;
     }
-    if (!best) continue;
+    if (!best || best.debug.voidPenalty > 0.4 || best.debug.localGreen < 0.38) continue;
     candidates.push({
       ...best,
       x: junction.x,
       y: junction.y,
-      radius: Math.max(best.radius, junction.radius * 7),
-      score: Math.round(clamp(best.score + Math.min(10, junction.strength * 10), 0, 99)),
+      radius: Math.max(best.radius * 0.54, junction.radius * 4.2),
+      score: Math.round(clamp(best.score + 16 + Math.min(6, junction.strength * 6), 0, 96)),
       source: "junction"
     });
   }
 
   return nonMaximumSuppression(candidates.sort((a, b) => b.score - a.score)).slice(0, 36);
+}
+
+function scanCenterDotCandidates(data, mask, width, height) {
+  const dots = findCenterDotBlobs(data, mask, width, height);
+  const candidates = [];
+  const baseRadius = Math.max(11, Math.round(Math.min(width, height) * 0.032));
+  const radii = [baseRadius, Math.round(baseRadius * 1.3), Math.round(baseRadius * 1.65)];
+
+  for (const dot of dots) {
+    let best = null;
+    for (const radius of radii) {
+      const candidate = scoreRadialCenter(data, mask, width, height, dot.x, dot.y, radius);
+      if (!best || candidate.score > best.score) best = candidate;
+    }
+    if (!best || best.debug.localGreen < 0.44 || best.debug.voidPenalty > 0.34) continue;
+    candidates.push({
+      ...best,
+      x: dot.x,
+      y: dot.y,
+      radius: Math.max(best.radius * 0.5, dot.radius * 7),
+      score: Math.round(clamp(best.score + 18 + dot.redness * 6, 0, 96)),
+      source: "center-cross"
+    });
+  }
+
+  return nonMaximumSuppression(candidates.sort((a, b) => b.score - a.score)).slice(0, 48);
+}
+
+function findCenterDotBlobs(data, mask, width, height) {
+  const dotMask = new Uint8Array(mask.length);
+  const ringRadius = Math.max(5, Math.round(Math.min(width, height) * 0.024));
+
+  for (let y = ringRadius; y < height - ringRadius; y += 1) {
+    for (let x = ringRadius; x < width - ringRadius; x += 1) {
+      const index = y * width + x;
+      const pixel = index * 4;
+      const r = data[pixel];
+      const g = data[pixel + 1];
+      const b = data[pixel + 2];
+      const luminance = getLuminance(data, pixel);
+      const redBrown = luminance > 38 && luminance < 138 && r > g * 0.7 && r > b * 0.98 && g < 150;
+      const tinyDarkCenter = luminance < 78 && localGreenRing(mask, width, height, x, y, 3) >= 0.28;
+      if ((!redBrown && !tinyDarkCenter) || localGreenRing(mask, width, height, x, y, ringRadius) < 0.46) continue;
+      dotMask[index] = 1;
+    }
+  }
+
+  const visited = new Uint8Array(dotMask.length);
+  const dots = [];
+  for (let start = 0; start < dotMask.length; start += 1) {
+    if (!dotMask[start] || visited[start]) continue;
+    const queue = [start];
+    visited[start] = 1;
+    let area = 0;
+    let sumX = 0;
+    let sumY = 0;
+    let redness = 0;
+
+    for (let head = 0; head < queue.length; head += 1) {
+      const index = queue[head];
+      const x = index % width;
+      const y = (index / width) | 0;
+      const pixel = index * 4;
+      const r = data[pixel];
+      const g = data[pixel + 1];
+      const b = data[pixel + 2];
+      area += 1;
+      sumX += x;
+      sumY += y;
+      redness += clamp((r - Math.max(g * 0.7, b * 0.95) + 18) / 80, 0, 1);
+
+      const neighbors = [index - 1, index + 1, index - width, index + width];
+      for (const next of neighbors) {
+        if (next < 0 || next >= dotMask.length || visited[next] || !dotMask[next]) continue;
+        const nx = next % width;
+        if (Math.abs(nx - x) > 1) continue;
+        visited[next] = 1;
+        queue.push(next);
+      }
+    }
+
+    if (area < 1 || area > 34) continue;
+    dots.push({
+      x: sumX / area,
+      y: sumY / area,
+      radius: Math.sqrt(area / Math.PI),
+      redness: redness / area
+    });
+  }
+
+  return dots
+    .sort((a, b) => b.redness - a.redness)
+    .slice(0, 140);
 }
 
 function findDarkJunctionBlobs(data, mask, width, height) {
@@ -396,15 +489,19 @@ function findDarkJunctionBlobs(data, mask, width, height) {
       if (luminance > 102 || (!reddishCenter && luminance > 86)) continue;
 
       let greenAround = 0;
+      let innerGreen = 0;
       let samples = 0;
       for (let angleIndex = 0; angleIndex < 12; angleIndex += 1) {
         const angle = (angleIndex / 12) * TWO_PI;
         const sx = Math.round(x + Math.cos(angle) * radius);
         const sy = Math.round(y + Math.sin(angle) * radius);
+        const ix = Math.round(x + Math.cos(angle) * 3);
+        const iy = Math.round(y + Math.sin(angle) * 3);
         greenAround += mask[sy * width + sx] || 0;
+        innerGreen += mask[iy * width + ix] || 0;
         samples += 1;
       }
-      if (greenAround / samples >= 0.34) junctionMask[index] = 1;
+      if (greenAround / samples >= 0.42 && innerGreen / samples >= 0.22) junctionMask[index] = 1;
     }
   }
 
@@ -438,7 +535,7 @@ function findDarkJunctionBlobs(data, mask, width, height) {
       }
     }
 
-    if (area < 2 || area > 90) continue;
+    if (area < 2 || area > 54) continue;
     junctions.push({
       x: sumX / area,
       y: sumY / area,
@@ -473,7 +570,6 @@ function scoreRadialCenter(data, mask, width, height, x, y, radius) {
   const paleValues = [];
   const darkValues = [];
   let greenCoverage = 0;
-  let darkSpokes = 0;
 
   for (let i = 0; i < sectors; i += 1) {
     const angle = (i / sectors) * TWO_PI;
@@ -483,21 +579,25 @@ function scoreRadialCenter(data, mask, width, height, x, y, radius) {
     paleValues.push(Math.max(outer.paleScore, mid.paleScore));
     darkValues.push(clamp((105 - mid.luminance) / 85, 0, 1) * (outer.isGreen ? 1 : 0.55));
     if (outer.isGreen || mid.isGreen) greenCoverage += 1;
-    if (mid.luminance < 82 && outer.isGreen) darkSpokes += 1;
   }
 
   const peaks = countPeakGroups(ringValues);
   const paleGroups = countPeakGroups(paleValues);
   const darkGroups = countPeakGroups(darkValues);
   const centerDarkness = centerDarknessScore(data, width, x, y, radius);
+  const voidPenalty = darkVoidPenalty(data, mask, width, height, x, y, radius);
+  const localGreen = localGreenRing(mask, width, height, x, y, Math.max(3, Math.round(radius * 0.28)));
   const coverageScore = clamp(greenCoverage / sectors, 0, 1);
   const squarePattern = scoreSquarePattern(data, mask, width, height, x, y, radius);
+  const crossPattern = scoreCrossPattern(data, mask, width, height, x, y, radius);
+  const yPattern = scoreYPattern(data, mask, width, height, x, y, radius);
+  const grooveCross = scoreGrooveCrossPattern(data, width, height, x, y, radius);
+  const grooveY = scoreGrooveYPattern(data, width, height, x, y, radius);
   const trianglePenalty = peaks === 3 && paleGroups === 3 ? 0.18 : 0;
   const peakScore = peaks === 4 ? 1 : peaks === 5 ? 0.74 : peaks === 3 ? 0.44 : peaks === 2 || peaks === 6 ? 0.28 : 0.1;
   const darkGroupScore = darkGroups === 4 ? 1 : darkGroups === 5 ? 0.64 : darkGroups === 3 ? 0.42 : darkGroups === 2 || darkGroups === 6 ? 0.22 : 0.06;
   const paleScore = paleGroups === 4 ? 1 : paleGroups === 5 ? 0.72 : paleGroups === 3 ? 0.5 : paleGroups === 2 ? 0.36 : 0.14;
-  const spokeScore = clamp(darkSpokes / 10, 0, 1);
-  const rawScore = peakScore * 0.18 + darkGroupScore * 0.24 + squarePattern * 0.22 + centerDarkness * 0.16 + coverageScore * 0.1 + paleScore * 0.06 + spokeScore * 0.04 - trianglePenalty;
+  const rawScore = grooveCross * 0.48 + crossPattern * 0.18 + squarePattern * 0.1 + darkGroupScore * 0.07 + peakScore * 0.04 + centerDarkness * 0.05 + coverageScore * 0.04 + localGreen * 0.04 + paleScore * 0.02 - grooveY * 0.1 - yPattern * 0.04 - trianglePenalty * 0.45 - voidPenalty * 0.26;
   const score = Math.round(clamp(rawScore * 100, 0, 96));
 
   return {
@@ -506,7 +606,7 @@ function scoreRadialCenter(data, mask, width, height, x, y, radius) {
     radius: radius * 1.45,
     score,
     source: "pattern-break",
-    debug: { peaks, paleGroups, darkGroups, squarePattern, centerDarkness, coverageScore },
+    debug: { peaks, paleGroups, darkGroups, squarePattern, crossPattern, yPattern, grooveCross, grooveY, centerDarkness, coverageScore, localGreen, voidPenalty },
     leaves: []
   };
 }
@@ -554,10 +654,145 @@ function scoreSquarePattern(data, mask, width, height, x, y, radius) {
   return best;
 }
 
+function scoreCrossPattern(data, mask, width, height, x, y, radius) {
+  let best = 0;
+  for (let offsetIndex = 0; offsetIndex < 16; offsetIndex += 1) {
+    const offset = (offsetIndex / 16) * (Math.PI / 2);
+    const arms = [0, 1, 2, 3].map((i) => rayLeafStrength(data, mask, width, height, x, y, offset + i * (TWO_PI / 4), radius));
+    const gaps = [0, 1, 2, 3].map((i) => rayLeafStrength(data, mask, width, height, x, y, offset + Math.PI / 4 + i * (TWO_PI / 4), radius));
+    const armAverage = average(arms);
+    const weakestArm = Math.min(...arms);
+    const balance = 1 - clamp(stddev(arms) / Math.max(0.08, armAverage), 0, 1);
+    const gapSeparation = clamp(armAverage - average(gaps) * 0.56 + 0.12, 0, 1);
+    const score = weakestArm * 0.34 + armAverage * 0.22 + balance * 0.24 + gapSeparation * 0.2;
+    best = Math.max(best, score);
+  }
+  return clamp(best, 0, 1);
+}
+
+function scoreYPattern(data, mask, width, height, x, y, radius) {
+  let best = 0;
+  for (let offsetIndex = 0; offsetIndex < 24; offsetIndex += 1) {
+    const offset = (offsetIndex / 24) * (TWO_PI / 3);
+    const arms = [0, 1, 2].map((i) => rayLeafStrength(data, mask, width, height, x, y, offset + i * (TWO_PI / 3), radius));
+    const armAverage = average(arms);
+    const balance = 1 - clamp(stddev(arms) / Math.max(0.08, armAverage), 0, 1);
+    const score = Math.min(...arms) * 0.38 + armAverage * 0.28 + balance * 0.34;
+    best = Math.max(best, score);
+  }
+  return clamp(best, 0, 1);
+}
+
+function scoreGrooveCrossPattern(data, width, height, x, y, radius) {
+  let best = 0;
+  for (let offsetIndex = 0; offsetIndex < 16; offsetIndex += 1) {
+    const offset = (offsetIndex / 16) * (Math.PI / 2);
+    const grooves = [0, 1, 2, 3].map((i) => rayGrooveStrength(data, width, height, x, y, offset + i * (TWO_PI / 4), radius));
+    const diagonals = [0, 1, 2, 3].map((i) => rayGrooveStrength(data, width, height, x, y, offset + Math.PI / 4 + i * (TWO_PI / 4), radius));
+    const grooveAverage = average(grooves);
+    const weakestGroove = Math.min(...grooves);
+    const balance = 1 - clamp(stddev(grooves) / Math.max(0.08, grooveAverage), 0, 1);
+    const separation = clamp(grooveAverage - average(diagonals) * 0.55 + 0.18, 0, 1);
+    best = Math.max(best, weakestGroove * 0.38 + grooveAverage * 0.2 + balance * 0.22 + separation * 0.2);
+  }
+  return clamp(best, 0, 1);
+}
+
+function scoreGrooveYPattern(data, width, height, x, y, radius) {
+  let best = 0;
+  for (let offsetIndex = 0; offsetIndex < 24; offsetIndex += 1) {
+    const offset = (offsetIndex / 24) * (TWO_PI / 3);
+    const grooves = [0, 1, 2].map((i) => rayGrooveStrength(data, width, height, x, y, offset + i * (TWO_PI / 3), radius));
+    const grooveAverage = average(grooves);
+    const balance = 1 - clamp(stddev(grooves) / Math.max(0.08, grooveAverage), 0, 1);
+    best = Math.max(best, Math.min(...grooves) * 0.42 + grooveAverage * 0.24 + balance * 0.34);
+  }
+  return clamp(best, 0, 1);
+}
+
+function rayGrooveStrength(data, width, height, x, y, angle, radius) {
+  const distances = [0.12, 0.18, 0.26, 0.36, 0.48, 0.62];
+  let dark = 0;
+  let count = 0;
+  for (const distanceRatio of distances) {
+    const distanceValue = radius * distanceRatio;
+    const center = darkSample(data, width, height, x + Math.cos(angle) * distanceValue, y + Math.sin(angle) * distanceValue);
+    const left = darkSample(data, width, height, x + Math.cos(angle + 0.1) * distanceValue, y + Math.sin(angle + 0.1) * distanceValue);
+    const right = darkSample(data, width, height, x + Math.cos(angle - 0.1) * distanceValue, y + Math.sin(angle - 0.1) * distanceValue);
+    dark += Math.max(center, left, right);
+    count += 1;
+  }
+  return clamp(dark / count, 0, 1);
+}
+
+function darkSample(data, width, height, fx, fy) {
+  const x = clamp(Math.round(fx), 0, width - 1);
+  const y = clamp(Math.round(fy), 0, height - 1);
+  const pixel = (y * width + x) * 4;
+  const r = data[pixel];
+  const g = data[pixel + 1];
+  const b = data[pixel + 2];
+  const luminance = getLuminance(data, pixel);
+  const reddish = r > g * 0.82 && r > b * 0.9 ? 0.16 : 0;
+  return clamp((118 - luminance) / 82 + reddish, 0, 1);
+}
+
+function rayLeafStrength(data, mask, width, height, x, y, angle, radius) {
+  const distances = [0.34, 0.5, 0.68, 0.88, 1.08, 1.28];
+  let green = 0;
+  let pale = 0;
+  let count = 0;
+  for (const distanceRatio of distances) {
+    const distanceValue = radius * distanceRatio;
+    const center = sampleAt(data, mask, width, height, x + Math.cos(angle) * distanceValue, y + Math.sin(angle) * distanceValue);
+    const left = sampleAt(data, mask, width, height, x + Math.cos(angle + 0.13) * distanceValue, y + Math.sin(angle + 0.13) * distanceValue);
+    const right = sampleAt(data, mask, width, height, x + Math.cos(angle - 0.13) * distanceValue, y + Math.sin(angle - 0.13) * distanceValue);
+    const samples = [center, left, right];
+    green += average(samples.map((sample) => sample.greenScore));
+    pale += Math.max(...samples.map((sample) => sample.paleScore));
+    count += 1;
+  }
+  return clamp((green / count) * 0.76 + (pale / count) * 0.24, 0, 1);
+}
+
 function centerDarknessScore(data, width, x, y, radius) {
   const center = averageDiskLuminance(data, width, x, y, Math.max(2, Math.round(radius * 0.12)));
   const ring = averageRingLuminance(data, width, x, y, Math.round(radius * 0.42), 16);
   return clamp((ring - center + 22) / 92, 0, 1);
+}
+
+function darkVoidPenalty(data, mask, width, height, x, y, radius) {
+  const innerRadius = Math.max(3, Math.round(radius * 0.26));
+  let dark = 0;
+  let notGreen = 0;
+  let count = 0;
+
+  for (let dy = -innerRadius; dy <= innerRadius; dy += 1) {
+    for (let dx = -innerRadius; dx <= innerRadius; dx += 1) {
+      if (dx * dx + dy * dy > innerRadius * innerRadius) continue;
+      const sx = clamp(Math.round(x + dx), 0, width - 1);
+      const sy = clamp(Math.round(y + dy), 0, height - 1);
+      const index = sy * width + sx;
+      const luminance = getLuminance(data, index * 4);
+      if (luminance < 58) dark += 1;
+      if (!mask[index]) notGreen += 1;
+      count += 1;
+    }
+  }
+
+  return clamp((dark / Math.max(1, count)) * 0.55 + (notGreen / Math.max(1, count)) * 0.45, 0, 1);
+}
+
+function localGreenRing(mask, width, height, x, y, radius) {
+  let green = 0;
+  const samples = 16;
+  for (let i = 0; i < samples; i += 1) {
+    const angle = (i / samples) * TWO_PI;
+    const sx = clamp(Math.round(x + Math.cos(angle) * radius), 0, width - 1);
+    const sy = clamp(Math.round(y + Math.sin(angle) * radius), 0, height - 1);
+    green += mask[sy * width + sx] || 0;
+  }
+  return green / samples;
 }
 
 function averageDiskLuminance(data, width, x, y, radius) {
@@ -610,8 +845,9 @@ function mergeCandidates(candidates) {
 
 function rankScore(candidate) {
   const sourceBoosts = {
-    junction: 30,
-    "pale-pattern": 20,
+    "center-cross": 42,
+    junction: 38,
+    "pale-pattern": 4,
     "pattern-break": -20,
     "leaf-group": -8
   };
