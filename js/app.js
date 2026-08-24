@@ -112,7 +112,6 @@ async function loadImageUrl(url, revoke) {
   focusPoint = null;
   tracker.reset();
   analyzeNow();
-  analyzeNow();
   statusText.textContent = "テスト画像を解析中";
 }
 
@@ -161,7 +160,7 @@ function pickCandidate(event) {
   }
   selectedCandidate = candidate;
   selectedLabel.textContent = `候補 #${candidate.id}`;
-  selectedScore.textContent = `${candidate.score}%`;
+  selectedScore.textContent = `${candidate.displayScore ?? candidate.score}%`;
   candidatePanel.hidden = false;
 }
 

@@ -58,7 +58,7 @@ export class OverlayRenderer {
       ctx.beginPath();
       ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
       ctx.lineWidth = Math.max(3, 5 * (window.devicePixelRatio || 1));
-      ctx.strokeStyle = scoreColor(candidate.score);
+      ctx.strokeStyle = scoreColor(candidate.displayScore ?? candidate.score);
       ctx.shadowColor = "rgba(0, 0, 0, 0.5)";
       ctx.shadowBlur = 7;
       ctx.stroke();
