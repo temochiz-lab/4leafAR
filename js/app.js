@@ -143,7 +143,9 @@ function analyzeNow() {
   window.__cloverDebug = {
     source: { width: source.width, height: source.height, type: source.type },
     candidates: visibleCandidates,
-    leaves: lastDebugLeaves.length
+    leaves: lastDebugLeaves.length,
+    paleMarks: result.paleMarks?.length || 0,
+    paleCandidates: result.paleCandidates?.slice(0, 12) || []
   };
 }
 

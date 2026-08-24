@@ -212,6 +212,12 @@ input[type="range"] {
   color: var(--muted);
 }
 
+.build-info {
+  color: rgba(243, 247, 236, 0.48);
+  font-size: 12px;
+  text-align: right;
+}
+
 @media (max-width: 720px) {
   .app {
     grid-template-rows: minmax(0, 1fr) auto;

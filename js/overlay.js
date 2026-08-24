@@ -44,25 +44,12 @@ export class OverlayRenderer {
       const radius = candidate.radius * this.fit.scale;
       ctx.beginPath();
       ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
-      ctx.lineWidth = 4;
-      ctx.strokeStyle = candidate.score >= 75 ? "#d9ff58" : "#ffcc4a";
+      ctx.lineWidth = Math.max(3, 5 * (window.devicePixelRatio || 1));
+      ctx.strokeStyle = scoreColor(candidate.score);
       ctx.shadowColor = "rgba(0, 0, 0, 0.5)";
-      ctx.shadowBlur = 6;
+      ctx.shadowBlur = 7;
       ctx.stroke();
       ctx.shadowBlur = 0;
-
-      ctx.fillStyle = "rgba(16, 20, 15, 0.84)";
-      const label = `#${candidate.id} 四葉候補 ${candidate.score}%`;
-      ctx.font = `${Math.max(13, Math.round(14 * (window.devicePixelRatio || 1)))}px sans-serif`;
-      const metrics = ctx.measureText(label);
-      const labelWidth = metrics.width + 18;
-      const labelHeight = 28 * (window.devicePixelRatio || 1);
-      const labelX = Math.min(Math.max(8, center.x - labelWidth / 2), this.overlayCanvas.width - labelWidth - 8);
-      const labelY = Math.max(8, center.y - radius - labelHeight - 6);
-      roundRect(ctx, labelX, labelY, labelWidth, labelHeight, 7 * (window.devicePixelRatio || 1));
-      ctx.fill();
-      ctx.fillStyle = "#f3f7ec";
-      ctx.fillText(label, labelX + 9, labelY + labelHeight * 0.68);
     }
   }
 
@@ -98,12 +85,9 @@ function containFit(srcW, srcH, dstW, dstH) {
   };
 }
 
-function roundRect(ctx, x, y, width, height, radius) {
-  ctx.beginPath();
-  ctx.moveTo(x + radius, y);
-  ctx.arcTo(x + width, y, x + width, y + height, radius);
-  ctx.arcTo(x + width, y + height, x, y + height, radius);
-  ctx.arcTo(x, y + height, x, y, radius);
-  ctx.arcTo(x, y, x + width, y, radius);
-  ctx.closePath();
+function scoreColor(score) {
+  const t = Math.max(0, Math.min(1, (score - 45) / 50));
+  const hue = 46 - t * 46;
+  const lightness = 58 - t * 8;
+  return `hsl(${hue} 92% ${lightness}%)`;
 }
