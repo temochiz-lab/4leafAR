@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>四葉クローバー探索AR</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="css/app.css">
+  </head>
+  <body>
+    <main class="app">
+      <section class="stage" aria-label="カメラプレビュー">
+        <video id="cameraVideo" playsinline muted></video>
+        <canvas id="previewCanvas"></canvas>
+        <canvas id="overlayCanvas"></canvas>
+        <div class="hud">
+          <div>
+            <span id="statusText">待機中</span>
+            <strong id="candidateCount">0</strong>
+          </div>
+          <div id="opencvState">OpenCV.js 読み込み中</div>
+        </div>
+        <div id="candidatePanel" class="candidate-panel" hidden>
+          <div>
+            <strong id="selectedLabel">候補</strong>
+            <span id="selectedScore">0%</span>
+          </div>
+          <div class="mark-buttons" role="group" aria-label="候補ラベル">
+            <button data-label="四葉">四葉</button>
+            <button data-label="三葉">三葉</button>
+            <button data-label="判定不能">判定不能</button>
+            <button data-label="誤検出">誤検出</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="controls" aria-label="操作">
+        <div class="control-row primary-actions">
+          <button id="startButton">カメラ開始</button>
+          <button id="pauseButton">解析停止</button>
+          <label class="file-button">
+            画像選択
+            <input id="imageInput" type="file" accept="image/*">
+          </label>
+        </div>
+
+        <div class="control-grid">
+          <label>
+            判定しきい値
+            <input id="thresholdInput" type="range" min="35" max="95" value="62">
+            <span id="thresholdValue">62%</span>
+          </label>
+          <label>
+            解析頻度
+            <input id="fpsInput" type="range" min="1" max="12" value="6">
+            <span id="fpsValue">6 fps</span>
+          </label>
+          <label class="switch">
+            <input id="debugInput" type="checkbox">
+            <span>デバッグ表示</span>
+          </label>
+        </div>
+
+        <div class="control-row">
+          <button id="downloadJsonButton">JSON保存</button>
+          <button id="downloadImagesButton">候補画像保存</button>
+          <button id="clearButton">記録クリア</button>
+        </div>
+
+        <div class="saved-strip">
+          <span>保存候補</span>
+          <strong id="savedCount">0</strong>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>

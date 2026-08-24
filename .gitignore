@@ -1,0 +1,9 @@
+*.pdf
+*.JPEG
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.gif
+.DS_Store
+Thumbs.db
