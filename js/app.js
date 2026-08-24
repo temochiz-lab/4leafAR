@@ -33,6 +33,7 @@ let lastAnalysis = 0;
 let visibleCandidates = [];
 let selectedCandidate = null;
 let lastDebugLeaves = [];
+let focusPoint = null;
 
 window.addEventListener("opencv-ready", () => {
   opencvState.textContent = "OpenCV.js 利用可能";
@@ -51,7 +52,7 @@ thresholdInput.addEventListener("input", syncSettings);
 fpsInput.addEventListener("input", syncSettings);
 window.addEventListener("resize", () => {
   if (source) overlay.drawSource(source);
-  overlay.draw(visibleCandidates, debugInput.checked ? lastDebugLeaves : []);
+  overlay.draw(visibleCandidates, debugInput.checked ? lastDebugLeaves : [], focusPoint);
 });
 
 document.querySelectorAll("[data-label]").forEach((button) => {
@@ -108,6 +109,7 @@ async function loadImageUrl(url, revoke) {
   source = { type: "image", element: image, width: image.naturalWidth, height: image.naturalHeight };
   running = true;
   paused = false;
+  focusPoint = null;
   tracker.reset();
   analyzeNow();
   analyzeNow();
@@ -122,7 +124,7 @@ function loop(time) {
     analyzeNow();
     lastAnalysis = time;
   } else {
-    overlay.draw(visibleCandidates, debugInput.checked ? lastDebugLeaves : []);
+    overlay.draw(visibleCandidates, debugInput.checked ? lastDebugLeaves : [], focusPoint);
   }
   if (source.type === "camera") requestAnimationFrame(loop);
 }
@@ -130,7 +132,7 @@ function loop(time) {
 function analyzeNow() {
   if (!source.width || !source.height) return;
   overlay.drawSource(source);
-  const result = detector.analyze(source, { threshold: Number(thresholdInput.value) });
+  const result = detector.analyze(source, { threshold: Number(thresholdInput.value), focusPoint });
   visibleCandidates = tracker.update(result.candidates);
   lastDebugLeaves = result.leaves.map((leaf) => ({
     x: leaf.x / (result.analysisSize.width / source.width),
@@ -139,13 +141,14 @@ function analyzeNow() {
   }));
   candidateCount.textContent = String(visibleCandidates.length);
   statusText.textContent = visibleCandidates.length ? "四葉候補を表示中" : "候補なし / カメラを近づけてください";
-  overlay.draw(visibleCandidates, debugInput.checked ? lastDebugLeaves : []);
+  overlay.draw(visibleCandidates, debugInput.checked ? lastDebugLeaves : [], focusPoint);
   window.__cloverDebug = {
     source: { width: source.width, height: source.height, type: source.type },
     candidates: visibleCandidates,
     leaves: lastDebugLeaves.length,
     paleMarks: result.paleMarks?.length || 0,
-    paleCandidates: result.paleCandidates?.slice(0, 12) || []
+    paleCandidates: result.paleCandidates?.slice(0, 12) || [],
+    rankedCandidates: result.rankedCandidates?.slice(0, 80) || []
   };
 }
 
@@ -165,10 +168,15 @@ function pickCandidate(event) {
 async function saveSelected(label) {
   if (!source || !selectedCandidate) return;
   await store.save(source, selectedCandidate, label);
+  if (label === "四葉") {
+    const radius = Math.max(selectedCandidate.radius * 4.5, Math.min(source.width, source.height) * 0.18);
+    focusPoint = { x: selectedCandidate.x, y: selectedCandidate.y, radius };
+  }
   candidatePanel.hidden = true;
   selectedCandidate = null;
   statusText.textContent = `${label}として保存しました`;
-  refreshSavedCount();
+  await refreshSavedCount();
+  analyzeNow();
 }
 
 async function downloadJson() {
@@ -186,8 +194,10 @@ async function downloadImages() {
 
 async function clearSaved() {
   await store.clear();
-  refreshSavedCount();
+  focusPoint = null;
+  await refreshSavedCount();
   statusText.textContent = "記録をクリアしました";
+  if (source) analyzeNow();
 }
 
 async function refreshSavedCount() {

@@ -26,7 +26,7 @@ export class OverlayRenderer {
     ctx.drawImage(source.element, fit.x, fit.y, fit.width, fit.height);
   }
 
-  draw(candidates, debugLeaves = []) {
+  draw(candidates, debugLeaves = [], focusPoint = null) {
     const ctx = this.overlayCtx;
     ctx.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
 
@@ -37,6 +37,18 @@ export class OverlayRenderer {
       ctx.strokeStyle = "rgba(217, 255, 88, 0.34)";
       ctx.lineWidth = 1;
       ctx.stroke();
+    }
+
+    if (focusPoint) {
+      const point = this.toCanvas(focusPoint.x, focusPoint.y);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, focusPoint.radius * this.fit.scale, 0, Math.PI * 2);
+      ctx.setLineDash([12 * (window.devicePixelRatio || 1), 8 * (window.devicePixelRatio || 1)]);
+      ctx.lineWidth = Math.max(2, 3 * (window.devicePixelRatio || 1));
+      ctx.strokeStyle = "rgba(243, 247, 236, 0.58)";
+      ctx.stroke();
+      ctx.restore();
     }
 
     for (const candidate of candidates) {

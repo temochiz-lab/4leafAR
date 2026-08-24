@@ -20,11 +20,19 @@ export class CloverDetector {
     const leaves = findLeafBlobs(mask, frame.data, width, height);
     const paleMarks = findPaleMarkBlobs(frame.data, mask, width, height);
     const paleCandidates = scorePaleMarkGroups(paleMarks, width, height);
-    const candidates = mergeCandidates([
+    const focusPoint = options.focusPoint
+      ? {
+          x: options.focusPoint.x * scale,
+          y: options.focusPoint.y * scale,
+          radius: options.focusPoint.radius * scale
+        }
+      : null;
+    const rankedCandidates = boostFocusedCandidates(mergeCandidates([
       ...paleCandidates,
       ...scoreFourLeafGroups(leaves, width, height),
       ...scanRadialCloverCenters(frame.data, mask, width, height)
-    ])
+    ]), focusPoint);
+    const candidates = rankedCandidates
       .filter((candidate) => candidate.score >= options.threshold)
       .slice(0, 8)
       .map((candidate) => ({
@@ -40,7 +48,7 @@ export class CloverDetector {
         }))
       }));
 
-    return { candidates, leaves, analysisSize: { width, height }, mask, paleMarks, paleCandidates };
+    return { candidates, leaves, analysisSize: { width, height }, mask, paleMarks, paleCandidates, rankedCandidates };
   }
 }
 
@@ -246,6 +254,7 @@ function scorePaleMarkGroups(marks, width, height) {
         y: center.y,
         radius: avgRadius * 2.2 + average(group.map((item) => item.radius)) * 1.8,
         score,
+        source: "pale-pattern",
         leaves: []
       });
     }
@@ -307,13 +316,14 @@ function scoreFourLeafGroups(leaves, width, height) {
       const radiusScore = 1 - clamp(stddev(radii) / Math.max(1, avgRadius), 0, 1);
       const areaScore = 1 - clamp(stddev(group.map((item) => item.area)) / Math.max(1, average(group.map((item) => item.area))), 0, 1);
       const centerPenalty = edgePenalty(center, width, height);
-      const score = Math.round(clamp((angleScore * 0.42 + radiusScore * 0.28 + areaScore * 0.2 + centerPenalty * 0.1) * 100, 0, 99));
+      const score = Math.round(clamp((angleScore * 0.44 + radiusScore * 0.3 + areaScore * 0.22 + centerPenalty * 0.04) * 100, 0, 99));
 
       candidates.push({
         x: center.x,
         y: center.y,
         radius: avgRadius + average(group.map((item) => item.radius)) * 1.7,
         score,
+        source: "leaf-group",
         leaves: group
       });
     }
@@ -327,7 +337,7 @@ function scanRadialCloverCenters(data, mask, width, height) {
   const step = Math.max(4, Math.round(Math.min(width, height) / 120));
   const minRadius = Math.max(16, Math.round(Math.min(width, height) * 0.04));
   const radii = [minRadius, Math.round(minRadius * 1.25), Math.round(minRadius * 1.55)];
-  const margin = Math.max(...radii) + 4;
+  const margin = Math.max(4, Math.round(minRadius * 0.35));
 
   for (let y = margin; y < height - margin; y += step) {
     for (let x = margin; x < width - margin; x += step) {
@@ -383,11 +393,13 @@ function scoreRadialCenter(data, mask, width, height, x, y, radius) {
   const darkGroups = countPeakGroups(darkValues);
   const centerDarkness = centerDarknessScore(data, width, x, y, radius);
   const coverageScore = clamp(greenCoverage / sectors, 0, 1);
-  const peakScore = peaks === 4 ? 1 : peaks === 3 || peaks === 5 ? 0.66 : peaks === 2 || peaks === 6 ? 0.32 : 0.1;
-  const darkGroupScore = darkGroups === 4 ? 1 : darkGroups === 3 || darkGroups === 5 ? 0.58 : darkGroups === 2 || darkGroups === 6 ? 0.24 : 0.06;
-  const paleScore = paleGroups >= 3 && paleGroups <= 5 ? 0.78 : paleGroups === 2 ? 0.4 : 0.14;
+  const squarePattern = scoreSquarePattern(data, mask, width, height, x, y, radius);
+  const trianglePenalty = peaks === 3 && paleGroups === 3 ? 0.18 : 0;
+  const peakScore = peaks === 4 ? 1 : peaks === 5 ? 0.74 : peaks === 3 ? 0.44 : peaks === 2 || peaks === 6 ? 0.28 : 0.1;
+  const darkGroupScore = darkGroups === 4 ? 1 : darkGroups === 5 ? 0.64 : darkGroups === 3 ? 0.42 : darkGroups === 2 || darkGroups === 6 ? 0.22 : 0.06;
+  const paleScore = paleGroups === 4 ? 1 : paleGroups === 5 ? 0.72 : paleGroups === 3 ? 0.5 : paleGroups === 2 ? 0.36 : 0.14;
   const spokeScore = clamp(darkSpokes / 10, 0, 1);
-  const rawScore = peakScore * 0.22 + darkGroupScore * 0.32 + centerDarkness * 0.2 + coverageScore * 0.14 + paleScore * 0.08 + spokeScore * 0.04;
+  const rawScore = peakScore * 0.18 + darkGroupScore * 0.24 + squarePattern * 0.22 + centerDarkness * 0.16 + coverageScore * 0.1 + paleScore * 0.06 + spokeScore * 0.04 - trianglePenalty;
   const score = Math.round(clamp(rawScore * 100, 0, 96));
 
   return {
@@ -395,6 +407,8 @@ function scoreRadialCenter(data, mask, width, height, x, y, radius) {
     y,
     radius: radius * 1.45,
     score,
+    source: "pattern-break",
+    debug: { peaks, paleGroups, darkGroups, squarePattern, centerDarkness, coverageScore },
     leaves: []
   };
 }
@@ -419,6 +433,27 @@ function sampleAt(data, mask, width, height, fx, fy) {
     luminance,
     isGreen: Boolean(mask[index]) || greenScore > 0.34
   };
+}
+
+function scoreSquarePattern(data, mask, width, height, x, y, radius) {
+  let best = 0;
+  const offsets = [0, Math.PI / 8, Math.PI / 4, Math.PI * 3 / 8];
+  for (const offset of offsets) {
+    const square = [0, 1, 2, 3].map((i) => {
+      const angle = offset + i * (TWO_PI / 4);
+      const outer = sampleAt(data, mask, width, height, x + Math.cos(angle) * radius * 0.88, y + Math.sin(angle) * radius * 0.88);
+      const mid = sampleAt(data, mask, width, height, x + Math.cos(angle) * radius * 0.52, y + Math.sin(angle) * radius * 0.52);
+      return Math.max(outer.paleScore, mid.paleScore) * 0.6 + Math.max(outer.greenScore, mid.greenScore) * 0.4;
+    });
+    const diagonals = [0, 1, 2, 3].map((i) => {
+      const angle = offset + Math.PI / 4 + i * (TWO_PI / 4);
+      return sampleAt(data, mask, width, height, x + Math.cos(angle) * radius * 0.7, y + Math.sin(angle) * radius * 0.7).greenScore;
+    });
+    const squareScore = average(square) * (1 - clamp(stddev(square) / Math.max(0.1, average(square)), 0, 1));
+    const separationScore = clamp((average(square) - average(diagonals) * 0.35 + 0.18), 0, 1);
+    best = Math.max(best, squareScore * 0.65 + separationScore * 0.35);
+  }
+  return best;
 }
 
 function centerDarknessScore(data, width, x, y, radius) {
@@ -469,6 +504,21 @@ function mergeCandidates(candidates) {
   return nonMaximumSuppression(candidates.sort((a, b) => b.score - a.score));
 }
 
+function boostFocusedCandidates(candidates, focusPoint) {
+  if (!focusPoint) return candidates;
+  return candidates
+    .map((candidate) => {
+      const d = distance(candidate, focusPoint);
+      const near = clamp(1 - d / Math.max(1, focusPoint.radius), 0, 1);
+      return {
+        ...candidate,
+        score: Math.round(clamp(candidate.score + near * 14, 0, 99)),
+        focusBoost: Math.round(near * 14)
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+}
+
 function chooseThree(items) {
   const result = [];
   for (let a = 0; a < items.length; a += 1) {
@@ -513,5 +563,5 @@ function getLuminance(data, pixel) {
 
 function edgePenalty(point, width, height) {
   const margin = Math.min(point.x, point.y, width - point.x, height - point.y);
-  return clamp(margin / Math.min(width, height) * 8, 0, 1);
+  return clamp(margin / Math.min(width, height) * 3, 0.42, 1);
 }
