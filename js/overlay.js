@@ -53,7 +53,7 @@ export class OverlayRenderer {
 
     for (const candidate of candidates) {
       const center = this.toCanvas(candidate.x, candidate.y);
-      const radius = candidate.radius * this.fit.scale;
+      const radius = Math.max(16 * (window.devicePixelRatio || 1), candidate.radius * this.fit.scale * 0.62);
       ctx.beginPath();
       ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
       ctx.lineWidth = Math.max(3, 5 * (window.devicePixelRatio || 1));

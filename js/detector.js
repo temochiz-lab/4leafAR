@@ -30,11 +30,12 @@ export class CloverDetector {
     const rankedCandidates = boostFocusedCandidates(mergeCandidates([
       ...paleCandidates,
       ...scoreFourLeafGroups(leaves, width, height),
+      ...scanDarkJunctionCenters(frame.data, mask, width, height),
       ...scanRadialCloverCenters(frame.data, mask, width, height)
     ]), focusPoint);
     const candidates = rankedCandidates
       .filter((candidate) => candidate.score >= options.threshold)
-      .slice(0, 8)
+      .slice(0, 24)
       .map((candidate) => ({
         ...candidate,
         x: candidate.x / scale,
@@ -354,6 +355,103 @@ function scanRadialCloverCenters(data, mask, width, height) {
   return nonMaximumSuppression(candidates.sort((a, b) => b.score - a.score)).slice(0, 24);
 }
 
+function scanDarkJunctionCenters(data, mask, width, height) {
+  const junctions = findDarkJunctionBlobs(data, mask, width, height);
+  const candidates = [];
+  const baseRadius = Math.max(12, Math.round(Math.min(width, height) * 0.035));
+  const radii = [baseRadius, Math.round(baseRadius * 1.28), Math.round(baseRadius * 1.62)];
+
+  for (const junction of junctions) {
+    let best = null;
+    for (const radius of radii) {
+      const candidate = scoreRadialCenter(data, mask, width, height, junction.x, junction.y, radius);
+      if (!best || candidate.score > best.score) best = candidate;
+    }
+    if (!best) continue;
+    candidates.push({
+      ...best,
+      x: junction.x,
+      y: junction.y,
+      radius: Math.max(best.radius, junction.radius * 7),
+      score: Math.round(clamp(best.score + Math.min(10, junction.strength * 10), 0, 99)),
+      source: "junction"
+    });
+  }
+
+  return nonMaximumSuppression(candidates.sort((a, b) => b.score - a.score)).slice(0, 36);
+}
+
+function findDarkJunctionBlobs(data, mask, width, height) {
+  const junctionMask = new Uint8Array(mask.length);
+  const radius = 5;
+  for (let y = radius; y < height - radius; y += 1) {
+    for (let x = radius; x < width - radius; x += 1) {
+      const index = y * width + x;
+      const pixel = index * 4;
+      const r = data[pixel];
+      const g = data[pixel + 1];
+      const b = data[pixel + 2];
+      const luminance = getLuminance(data, pixel);
+      const reddishCenter = r > g * 0.85 && r > b * 0.9;
+      if (luminance > 102 || (!reddishCenter && luminance > 86)) continue;
+
+      let greenAround = 0;
+      let samples = 0;
+      for (let angleIndex = 0; angleIndex < 12; angleIndex += 1) {
+        const angle = (angleIndex / 12) * TWO_PI;
+        const sx = Math.round(x + Math.cos(angle) * radius);
+        const sy = Math.round(y + Math.sin(angle) * radius);
+        greenAround += mask[sy * width + sx] || 0;
+        samples += 1;
+      }
+      if (greenAround / samples >= 0.34) junctionMask[index] = 1;
+    }
+  }
+
+  const visited = new Uint8Array(junctionMask.length);
+  const junctions = [];
+  for (let start = 0; start < junctionMask.length; start += 1) {
+    if (!junctionMask[start] || visited[start]) continue;
+    const queue = [start];
+    visited[start] = 1;
+    let area = 0;
+    let sumX = 0;
+    let sumY = 0;
+    let darkness = 0;
+
+    for (let head = 0; head < queue.length; head += 1) {
+      const index = queue[head];
+      const x = index % width;
+      const y = (index / width) | 0;
+      area += 1;
+      sumX += x;
+      sumY += y;
+      darkness += 1 - getLuminance(data, index * 4) / 255;
+
+      const neighbors = [index - 1, index + 1, index - width, index + width];
+      for (const next of neighbors) {
+        if (next < 0 || next >= junctionMask.length || visited[next] || !junctionMask[next]) continue;
+        const nx = next % width;
+        if (Math.abs(nx - x) > 1) continue;
+        visited[next] = 1;
+        queue.push(next);
+      }
+    }
+
+    if (area < 2 || area > 90) continue;
+    junctions.push({
+      x: sumX / area,
+      y: sumY / area,
+      radius: Math.sqrt(area / Math.PI),
+      strength: darkness / area
+    });
+  }
+
+  return junctions
+    .sort((a, b) => b.strength - a.strength)
+    .slice(0, 120);
+}
+
 function isPotentialCenter(data, mask, width, x, y) {
   const index = y * width + x;
   const pixel = index * 4;
@@ -465,10 +563,13 @@ function centerDarknessScore(data, width, x, y, radius) {
 function averageDiskLuminance(data, width, x, y, radius) {
   let sum = 0;
   let count = 0;
+  const height = data.length / 4 / width;
   for (let dy = -radius; dy <= radius; dy += 1) {
     for (let dx = -radius; dx <= radius; dx += 1) {
       if (dx * dx + dy * dy > radius * radius) continue;
-      const pixel = ((y + dy) * width + x + dx) * 4;
+      const sx = clamp(Math.round(x + dx), 0, width - 1);
+      const sy = clamp(Math.round(y + dy), 0, height - 1);
+      const pixel = (sy * width + sx) * 4;
       sum += getLuminance(data, pixel);
       count += 1;
     }
@@ -478,9 +579,12 @@ function averageDiskLuminance(data, width, x, y, radius) {
 
 function averageRingLuminance(data, width, x, y, radius, samples) {
   let sum = 0;
+  const height = data.length / 4 / width;
   for (let i = 0; i < samples; i += 1) {
     const angle = (i / samples) * TWO_PI;
-    const pixel = (Math.round(y + Math.sin(angle) * radius) * width + Math.round(x + Math.cos(angle) * radius)) * 4;
+    const sx = clamp(Math.round(x + Math.cos(angle) * radius), 0, width - 1);
+    const sy = clamp(Math.round(y + Math.sin(angle) * radius), 0, height - 1);
+    const pixel = (sy * width + sx) * 4;
     sum += getLuminance(data, pixel);
   }
   return sum / samples;
@@ -501,7 +605,17 @@ function countPeakGroups(values) {
 }
 
 function mergeCandidates(candidates) {
-  return nonMaximumSuppression(candidates.sort((a, b) => b.score - a.score));
+  return nonMaximumSuppression(candidates.sort((a, b) => rankScore(b) - rankScore(a)));
+}
+
+function rankScore(candidate) {
+  const sourceBoosts = {
+    junction: 30,
+    "pale-pattern": 20,
+    "pattern-break": -20,
+    "leaf-group": -8
+  };
+  return candidate.score + (sourceBoosts[candidate.source] || 0);
 }
 
 function boostFocusedCandidates(candidates, focusPoint) {
