@@ -418,9 +418,9 @@ function refineStillCandidates(data, mask, width, height, candidates) {
 
   for (const candidate of candidates) {
     const baseRadius = clamp(candidate.radius / 1.45, minDimension * 0.018, minDimension * 0.105);
-    const step = Math.max(2, Math.round(baseRadius * 0.16));
-    const offsets = [-step, 0, step];
-    const radii = [baseRadius * 0.68, baseRadius * 0.84, baseRadius, baseRadius * 1.18, baseRadius * 1.36];
+    const offsetStep = Math.max(2, baseRadius);
+    const offsets = [-0.46, -0.24, 0, 0.24, 0.46].map((ratio) => Math.round(offsetStep * ratio));
+    const radii = [baseRadius * 0.58, baseRadius * 0.74, baseRadius * 0.92, baseRadius * 1.1, baseRadius * 1.32, baseRadius * 1.54];
     let best = null;
 
     for (const dy of offsets) {
@@ -461,18 +461,52 @@ function scoreStillCandidate(data, mask, width, height, candidate, firstPass) {
   const paleScore = debug.paleGroups === 4 ? 1 : debug.paleGroups === 5 ? 0.62 : debug.paleGroups === 3 ? 0.22 : 0.34;
   const darkScore = debug.darkGroups === 4 ? 1 : debug.darkGroups === 5 ? 0.58 : debug.darkGroups === 3 ? 0.18 : 0.28;
   const centerScore = centerDotScore(data, width, height, candidate.x, candidate.y, candidate.radius);
+  const hubScore = cloverHubScore(data, mask, width, height, candidate.x, candidate.y, candidate.radius);
   const sourceScore = firstPass.source === "center-cross" ? 1 : firstPass.source === "junction" ? 0.78 : firstPass.source === "pale-pattern" ? 0.5 : 0.36;
-  const raw = crossLead * 0.2 +
-    grooveLead * 0.22 +
+  const raw = crossLead * 0.18 +
+    grooveLead * 0.19 +
     peakScore * 0.14 +
     paleScore * 0.08 +
-    darkScore * 0.07 +
-    debug.localGreen * 0.1 +
+    darkScore * 0.06 +
+    debug.localGreen * 0.08 +
     (1 - debug.voidPenalty) * 0.08 +
-    centerScore * 0.06 +
-    sourceScore * 0.03 +
+    hubScore * 0.14 +
+    centerScore * 0.03 +
+    sourceScore * 0.02 +
     clamp(firstPass.score / 100, 0, 1) * 0.02;
   return Math.round(clamp(raw * 100, 0, 96));
+}
+
+function cloverHubScore(data, mask, width, height, x, y, radius) {
+  const center = sampleAt(data, mask, width, height, x, y);
+  const localGreen = localGreenRing(mask, width, height, x, y, Math.max(3, Math.round(radius * 0.18)));
+  const innerVoid = darkVoidPenalty(data, mask, width, height, x, y, radius * 0.72);
+  const centerLum = averageDiskLuminance(data, width, x, y, Math.max(2, Math.round(radius * 0.1)));
+  const ringLum = averageRingLuminance(data, width, x, y, Math.max(4, Math.round(radius * 0.48)), 20);
+  const contrast = clamp((ringLum - centerLum + 18) / 68, 0, 1);
+  const paleConvergence = paleRingScore(data, mask, width, height, x, y, radius);
+  const softGreenHub = clamp(center.greenScore * 0.64 + localGreen * 0.36, 0, 1);
+  return clamp(softGreenHub * 0.32 + contrast * 0.2 + paleConvergence * 0.3 + (1 - innerVoid) * 0.18, 0, 1);
+}
+
+function paleRingScore(data, mask, width, height, x, y, radius) {
+  const samples = 32;
+  const radii = [0.34, 0.5, 0.68, 0.86];
+  const values = [];
+
+  for (let i = 0; i < samples; i += 1) {
+    const angle = (i / samples) * TWO_PI;
+    let best = 0;
+    for (const ratio of radii) {
+      const sample = sampleAt(data, mask, width, height, x + Math.cos(angle) * radius * ratio, y + Math.sin(angle) * radius * ratio);
+      best = Math.max(best, sample.paleScore);
+    }
+    values.push(best);
+  }
+
+  const groups = countPeakGroups(values);
+  const groupScore = groups === 4 ? 1 : groups === 5 ? 0.72 : groups === 3 ? 0.38 : 0.2;
+  return clamp(average(values) * 0.44 + groupScore * 0.56, 0, 1);
 }
 
 function centerDotScore(data, width, height, x, y, radius) {
