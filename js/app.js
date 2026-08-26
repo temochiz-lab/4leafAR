@@ -19,6 +19,8 @@ const fpsInput = document.querySelector("#fpsInput");
 const fpsValue = document.querySelector("#fpsValue");
 const debugInput = document.querySelector("#debugInput");
 const savedCount = document.querySelector("#savedCount");
+const arModeButton = document.querySelector("#arModeButton");
+const stillModeButton = document.querySelector("#stillModeButton");
 
 const camera = new CameraController(video);
 const detector = new CloverDetector();
@@ -34,6 +36,7 @@ let visibleCandidates = [];
 let selectedCandidate = null;
 let lastDebugLeaves = [];
 let focusPoint = null;
+let mode = "ar";
 
 window.addEventListener("opencv-ready", () => {
   opencvState.textContent = "OpenCV.js 利用可能";
@@ -44,6 +47,8 @@ opencvState.textContent = window.cv?.Mat ? "OpenCV.js 利用可能" : "JS解析 
 document.querySelector("#startButton").addEventListener("click", startCamera);
 document.querySelector("#pauseButton").addEventListener("click", togglePause);
 document.querySelector("#imageInput").addEventListener("change", loadImage);
+arModeButton.addEventListener("click", () => setMode("ar"));
+stillModeButton.addEventListener("click", () => setMode("still"));
 document.querySelector("#downloadJsonButton").addEventListener("click", downloadJson);
 document.querySelector("#downloadImagesButton").addEventListener("click", downloadImages);
 document.querySelector("#clearButton").addEventListener("click", clearSaved);
@@ -65,6 +70,7 @@ statusText.textContent = "カメラ開始またはテスト画像を選択";
 
 async function startCamera() {
   try {
+    setMode("ar");
     statusText.textContent = "カメラ権限を確認中";
     const element = await camera.start();
     source = {
@@ -97,6 +103,7 @@ function togglePause() {
 async function loadImage(event) {
   const file = event.target.files?.[0];
   if (!file) return;
+  setMode("still");
   await loadImageUrl(URL.createObjectURL(file), true);
 }
 
@@ -112,7 +119,6 @@ async function loadImageUrl(url, revoke) {
   focusPoint = null;
   tracker.reset();
   analyzeNow();
-  statusText.textContent = "テスト画像を解析中";
 }
 
 function loop(time) {
@@ -131,24 +137,84 @@ function loop(time) {
 function analyzeNow() {
   if (!source.width || !source.height) return;
   overlay.drawSource(source);
-  const result = detector.analyze(source, { threshold: Number(thresholdInput.value), focusPoint });
-  visibleCandidates = tracker.update(result.candidates);
+  const result = detector.analyze(source, getAnalysisOptions());
+  visibleCandidates = mode === "ar" ? tracker.update(result.candidates) : stabilizeStillCandidates(result.candidates);
   lastDebugLeaves = result.leaves.map((leaf) => ({
     x: leaf.x / (result.analysisSize.width / source.width),
     y: leaf.y / (result.analysisSize.height / source.height),
     radius: leaf.radius / (result.analysisSize.width / source.width)
   }));
   candidateCount.textContent = String(visibleCandidates.length);
-  statusText.textContent = visibleCandidates.length ? "四葉候補を表示中" : "候補なし / カメラを近づけてください";
+  statusText.textContent = getStatusMessage(visibleCandidates.length);
   overlay.draw(visibleCandidates, debugInput.checked ? lastDebugLeaves : [], focusPoint);
   window.__cloverDebug = {
     source: { width: source.width, height: source.height, type: source.type },
+    mode,
     candidates: visibleCandidates,
     leaves: lastDebugLeaves.length,
     paleMarks: result.paleMarks?.length || 0,
     paleCandidates: result.paleCandidates?.slice(0, 12) || [],
     rankedCandidates: result.rankedCandidates?.slice(0, 80) || []
   };
+}
+
+function setMode(nextMode) {
+  mode = nextMode;
+  arModeButton.classList.toggle("active", mode === "ar");
+  stillModeButton.classList.toggle("active", mode === "still");
+  arModeButton.setAttribute("aria-selected", String(mode === "ar"));
+  stillModeButton.setAttribute("aria-selected", String(mode === "still"));
+  fpsInput.disabled = mode === "still";
+  document.querySelector("#startButton").disabled = mode === "still";
+  document.querySelector("#pauseButton").disabled = mode === "still";
+  opencvState.textContent = mode === "still" ? "静止画高解像度解析" : (window.cv?.Mat ? "OpenCV.js 利用可能" : "JS解析 / OpenCV差し替え可");
+
+  if (mode === "still") {
+    camera.stop();
+    paused = false;
+    running = Boolean(source);
+  }
+
+  if (source) {
+    tracker.reset();
+    analyzeNow();
+  }
+}
+
+function getAnalysisOptions() {
+  const threshold = Number(thresholdInput.value);
+  if (mode === "still") {
+    return {
+      threshold: Math.max(35, threshold - 8),
+      focusPoint,
+      maxWidth: 900,
+      maxCandidates: 72
+    };
+  }
+  return {
+    threshold,
+    focusPoint,
+    maxWidth: 360,
+    maxCandidates: 24
+  };
+}
+
+function stabilizeStillCandidates(candidates) {
+  return candidates.map((candidate, index) => ({
+    ...candidate,
+    id: index + 1,
+    hits: 1,
+    streak: 1,
+    stability: 1,
+    displayScore: candidate.score
+  }));
+}
+
+function getStatusMessage(count) {
+  if (mode === "still") {
+    return count ? "静止画の四葉候補を表示中" : "候補なし / 別の写真で試してください";
+  }
+  return count ? "四葉候補を表示中" : "候補なし / カメラを近づけてください";
 }
 
 function pickCandidate(event) {

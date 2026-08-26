@@ -141,6 +141,27 @@ input {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mode-switch button {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.mode-switch button.active {
+  background: #33442a;
+  color: var(--text);
+}
+
 button,
 .file-button {
   min-height: 44px;
@@ -157,6 +178,11 @@ button,
 button:active,
 .file-button:active {
   transform: translateY(1px);
+}
+
+button:disabled,
+input:disabled {
+  opacity: 0.48;
 }
 
 .file-button input {

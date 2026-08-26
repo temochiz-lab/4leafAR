@@ -7,7 +7,7 @@ export class CloverDetector {
   }
 
   analyze(source, options) {
-    const maxWidth = 360;
+    const maxWidth = options.maxWidth || 360;
     const scale = Math.min(1, maxWidth / source.width);
     const width = Math.max(1, Math.round(source.width * scale));
     const height = Math.max(1, Math.round(source.height * scale));
@@ -35,7 +35,7 @@ export class CloverDetector {
     ]), focusPoint);
     const candidates = rankedCandidates
       .filter((candidate) => candidate.score >= options.threshold)
-      .slice(0, 24)
+      .slice(0, options.maxCandidates || 24)
       .map((candidate) => ({
         ...candidate,
         x: candidate.x / scale,
