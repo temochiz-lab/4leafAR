@@ -63,6 +63,15 @@ export class OverlayRenderer {
       ctx.shadowBlur = 7;
       ctx.stroke();
       ctx.shadowBlur = 0;
+
+      const dotRadius = Math.max(3 * (window.devicePixelRatio || 1), Math.min(7 * (window.devicePixelRatio || 1), radius * 0.28));
+      ctx.beginPath();
+      ctx.arc(center.x, center.y, dotRadius, 0, Math.PI * 2);
+      ctx.fillStyle = "#1e88ff";
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
+      ctx.lineWidth = Math.max(1.5, 2 * (window.devicePixelRatio || 1));
+      ctx.fill();
+      ctx.stroke();
     }
   }
 
