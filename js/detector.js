@@ -27,12 +27,17 @@ export class CloverDetector {
           radius: options.focusPoint.radius * scale
         }
       : null;
-    const rankedCandidates = boostFocusedCandidates(mergeCandidates([
+    let rankedCandidates = boostFocusedCandidates(mergeCandidates([
       ...paleCandidates,
       ...scanCenterDotCandidates(frame.data, mask, width, height),
       ...scoreFourLeafGroups(leaves, width, height),
       ...scanDarkJunctionCenters(frame.data, mask, width, height)
     ]), focusPoint);
+
+    if (options.precisionMode) {
+      rankedCandidates = refineStillCandidates(frame.data, mask, width, height, rankedCandidates.slice(0, options.refineCandidates || 160));
+    }
+
     const candidates = rankedCandidates
       .filter((candidate) => candidate.score >= options.threshold)
       .slice(0, options.maxCandidates || 24)
@@ -405,6 +410,94 @@ function scanCenterDotCandidates(data, mask, width, height) {
   }
 
   return nonMaximumSuppression(candidates.sort((a, b) => b.score - a.score)).slice(0, 48);
+}
+
+function refineStillCandidates(data, mask, width, height, candidates) {
+  const refined = [];
+  const minDimension = Math.min(width, height);
+
+  for (const candidate of candidates) {
+    const baseRadius = clamp(candidate.radius / 1.45, minDimension * 0.018, minDimension * 0.105);
+    const step = Math.max(2, Math.round(baseRadius * 0.16));
+    const offsets = [-step, 0, step];
+    const radii = [baseRadius * 0.68, baseRadius * 0.84, baseRadius, baseRadius * 1.18, baseRadius * 1.36];
+    let best = null;
+
+    for (const dy of offsets) {
+      for (const dx of offsets) {
+        const x = clamp(candidate.x + dx, 0, width - 1);
+        const y = clamp(candidate.y + dy, 0, height - 1);
+        for (const radius of radii) {
+          const scored = scoreRadialCenter(data, mask, width, height, x, y, radius);
+          const stillScore = scoreStillCandidate(data, mask, width, height, scored, candidate);
+          const refinedCandidate = {
+            ...scored,
+            radius: Math.max(radius * 1.05, candidate.radius * 0.42),
+            score: stillScore,
+            source: candidate.source === "pale-pattern" ? "still-pattern" : candidate.source,
+            leaves: candidate.leaves || [],
+            debug: {
+              ...scored.debug,
+              firstPassScore: candidate.score,
+              firstPassSource: candidate.source
+            }
+          };
+          if (!best || refinedCandidate.score > best.score) best = refinedCandidate;
+        }
+      }
+    }
+
+    if (best && best.score >= 42) refined.push(best);
+  }
+
+  return nonMaximumSuppression(refined.sort((a, b) => b.score - a.score), 1.22);
+}
+
+function scoreStillCandidate(data, mask, width, height, candidate, firstPass) {
+  const debug = candidate.debug;
+  const crossLead = clamp((debug.crossPattern - debug.yPattern * 0.84 + 0.18) / 0.36, 0, 1);
+  const grooveLead = clamp((debug.grooveCross - debug.grooveY * 0.82 + 0.18) / 0.38, 0, 1);
+  const peakScore = debug.peaks === 4 ? 1 : debug.peaks === 5 ? 0.68 : debug.peaks === 3 ? 0.14 : 0.28;
+  const paleScore = debug.paleGroups === 4 ? 1 : debug.paleGroups === 5 ? 0.62 : debug.paleGroups === 3 ? 0.22 : 0.34;
+  const darkScore = debug.darkGroups === 4 ? 1 : debug.darkGroups === 5 ? 0.58 : debug.darkGroups === 3 ? 0.18 : 0.28;
+  const centerScore = centerDotScore(data, width, height, candidate.x, candidate.y, candidate.radius);
+  const sourceScore = firstPass.source === "center-cross" ? 1 : firstPass.source === "junction" ? 0.78 : firstPass.source === "pale-pattern" ? 0.5 : 0.36;
+  const raw = crossLead * 0.2 +
+    grooveLead * 0.22 +
+    peakScore * 0.14 +
+    paleScore * 0.08 +
+    darkScore * 0.07 +
+    debug.localGreen * 0.1 +
+    (1 - debug.voidPenalty) * 0.08 +
+    centerScore * 0.06 +
+    sourceScore * 0.03 +
+    clamp(firstPass.score / 100, 0, 1) * 0.02;
+  return Math.round(clamp(raw * 100, 0, 96));
+}
+
+function centerDotScore(data, width, height, x, y, radius) {
+  const sampleRadius = Math.max(2, Math.round(radius * 0.12));
+  let redBrown = 0;
+  let dark = 0;
+  let count = 0;
+
+  for (let dy = -sampleRadius; dy <= sampleRadius; dy += 1) {
+    for (let dx = -sampleRadius; dx <= sampleRadius; dx += 1) {
+      if (dx * dx + dy * dy > sampleRadius * sampleRadius) continue;
+      const sx = clamp(Math.round(x + dx), 0, width - 1);
+      const sy = clamp(Math.round(y + dy), 0, height - 1);
+      const pixel = (sy * width + sx) * 4;
+      const r = data[pixel];
+      const g = data[pixel + 1];
+      const b = data[pixel + 2];
+      const luminance = getLuminance(data, pixel);
+      redBrown += clamp((r - Math.max(g * 0.72, b * 0.96) + 20) / 86, 0, 1) * clamp((145 - luminance) / 95, 0, 1);
+      dark += clamp((92 - luminance) / 70, 0, 1);
+      count += 1;
+    }
+  }
+
+  return Math.max(redBrown / Math.max(1, count), dark / Math.max(1, count) * 0.8);
 }
 
 function findCenterDotBlobs(data, mask, width, height) {
@@ -881,10 +974,10 @@ function chooseThree(items) {
   return result;
 }
 
-function nonMaximumSuppression(candidates) {
+function nonMaximumSuppression(candidates, radiusScale = 0.95) {
   const picked = [];
   for (const candidate of candidates) {
-    const tooClose = picked.some((existing) => distance(candidate, existing) < Math.max(candidate.radius, existing.radius) * 0.95);
+    const tooClose = picked.some((existing) => distance(candidate, existing) < Math.max(candidate.radius, existing.radius) * radiusScale);
     if (!tooClose) picked.push(candidate);
   }
   return picked;

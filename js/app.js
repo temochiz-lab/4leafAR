@@ -185,10 +185,12 @@ function getAnalysisOptions() {
   const threshold = Number(thresholdInput.value);
   if (mode === "still") {
     return {
-      threshold: Math.max(35, threshold - 8),
+      threshold: Math.max(45, threshold - 4),
       focusPoint,
-      maxWidth: 900,
-      maxCandidates: 72
+      maxWidth: 1400,
+      maxCandidates: 24,
+      refineCandidates: 180,
+      precisionMode: true
     };
   }
   return {
